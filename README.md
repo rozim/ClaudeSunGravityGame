@@ -11,7 +11,7 @@ Carefully look at the image in based on the rough sketch sketch.jpeg and impleme
 If you do not understand the idea then ask questions.
 ```
 
-Initial sketch as input to Claude:
+Initial sketch as input to Claude (click to enlarge).
 
 [![Initial rough sketch](sketch-small.jpeg)](sketch.jpeg)
 
