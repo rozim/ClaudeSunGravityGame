@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Sun Gravity Game</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #050510;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      font-family: monospace;
+      color: #aaa;
+    }
+    canvas {
+      border: 1px solid #223;
+      box-shadow: 0 0 40px rgba(255, 200, 50, 0.08);
+    }
+    #hint {
+      margin-top: 10px;
+      font-size: 12px;
+      color: #445;
+    }
+  </style>
+</head>
+<body>
+<canvas id="game" width="400" height="600"></canvas>
+<div id="hint">← → move &nbsp;|&nbsp; ↑ ↓ rotate &nbsp;|&nbsp; 1–9 / [ ] power &nbsp;|&nbsp; SPACE shoot</div>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = 400, H = 600;
+
+const SUN = { x: 200, y: 300, r: 38 };
+const SUN_BASE_X = 200;
+const SUN_BASE_Y = 300;
+const SUN_ORBIT_R = 40;  // radius of circular path
+const SUN_PERIOD = 60;   // seconds for full orbit
+const G = 4840000;
+const VERSION = 14;
+const GUN_MOVE_SPEED = 130;
+const GUN_ROTATE_SPEED = 2.2;
+
+// Shot power levels (keys 1-9, default 5)
+const SHOT_SPEEDS = [80, 130, 175, 215, 260, 310, 360, 415, 470];
+let shotLevel = 5;
+let shotSpeed = SHOT_SPEEDS[4];
+
+// Animated star field — fully random placement
+const STARS = Array.from({ length: 160 }, () => ({
+  x:     Math.random() * W,
+  y:     Math.random() * H,
+  r:     0.4 + Math.random() * 1.2,
+  base:  0.1  + Math.random() * 0.55,
+  amp:   0.06 + Math.random() * 0.2,
+  phase: Math.random() * Math.PI * 2,
+  speed: 0.3  + Math.random() * 1.4
+}));
+
+// Audio (lazy init on first keypress to satisfy browser autoplay policy)
+let audioCtx = null;
+function audio() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  return audioCtx;
+}
+
+function playShoot() {
+  const ac = audio(), t = ac.currentTime;
+  const osc = ac.createOscillator(), gain = ac.createGain();
+  osc.connect(gain); gain.connect(ac.destination);
+  osc.type = 'sawtooth';
+  osc.frequency.setValueAtTime(440, t);
+  osc.frequency.exponentialRampToValueAtTime(80, t + 0.18);
+  gain.gain.setValueAtTime(0.18, t);
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
+  osc.start(t); osc.stop(t + 0.18);
+}
+
+function playHitTarget() {
+  const ac = audio(), t = ac.currentTime;
+  // Bright ascending ping
+  const osc = ac.createOscillator(), gain = ac.createGain();
+  osc.connect(gain); gain.connect(ac.destination);
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(520, t);
+  osc.frequency.exponentialRampToValueAtTime(1400, t + 0.06);
+  gain.gain.setValueAtTime(0.35, t);
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.3);
+  osc.start(t); osc.stop(t + 0.3);
+}
+
+function playHitSun() {
+  const ac = audio(), t = ac.currentTime;
+  // Low noise thud
+  const buf = ac.createBuffer(1, ac.sampleRate * 0.35, ac.sampleRate);
+  const d = buf.getChannelData(0);
+  for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / d.length, 2);
+  const src = ac.createBufferSource();
+  src.buffer = buf;
+  const filt = ac.createBiquadFilter();
+  filt.type = 'lowpass'; filt.frequency.value = 180;
+  const gain = ac.createGain();
+  gain.gain.setValueAtTime(0.6, t);
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.35);
+  src.connect(filt); filt.connect(gain); gain.connect(ac.destination);
+  src.start(t); src.stop(t + 0.35);
+}
+
+function playClearAll() {
+  const ac = audio();
+  // Short ascending arpeggio
+  [523, 659, 784, 1047].forEach((freq, i) => {
+    const t = ac.currentTime + i * 0.1;
+    const osc = ac.createOscillator(), gain = ac.createGain();
+    osc.connect(gain); gain.connect(ac.destination);
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(freq, t);
+    gain.gain.setValueAtTime(0.25, t);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.25);
+    osc.start(t); osc.stop(t + 0.25);
+  });
+}
+
+// Game state
+let score = 0;
+let targets = [];
+let projectiles = [];
+let particles = [];
+let gun = { x: 200, y: 555, angle: -Math.PI / 2, size: 18 };
+let time = 0;
+
+const keys = {};
+document.addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if (e.code === 'Space') { e.preventDefault(); shoot(); playShoot(); }
+  const m = e.code.match(/^(?:Digit|Numpad)([1-9])$/);
+  if (m) { shotLevel = parseInt(m[1]); shotSpeed = SHOT_SPEEDS[shotLevel - 1]; }
+  if (e.code === 'BracketLeft')  { shotLevel = Math.max(1, shotLevel - 1); shotSpeed = SHOT_SPEEDS[shotLevel - 1]; }
+  if (e.code === 'BracketRight') { shotLevel = Math.min(9, shotLevel + 1); shotSpeed = SHOT_SPEEDS[shotLevel - 1]; }
+});
+document.addEventListener('keyup', e => { keys[e.code] = false; });
+
+function initTargets() {
+  targets = [];
+  // 2 rows of 5 in a grid, with small jitter
+  const cols = 5, rows = 2;
+  const xStep = (W - 80) / (cols - 1);  // ~80px apart
+  const yStep = 65;
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const x = 40 + c * xStep + (Math.random() - 0.5) * 20;
+      const y = 50 + r * yStep  + (Math.random() - 0.5) * 16;
+      targets.push({
+        x, y, baseY: y, size: 22, hit: false,
+        rotation: Math.random() * Math.PI * 2,
+        rotSpeed: (0.4 + Math.random() * 0.8) * (Math.random() < 0.5 ? 1 : -1),
+        bobPhase: Math.random() * Math.PI * 2,
+        bobSpeed: 0.12 + Math.random() * 0.08
+      });
+    }
+  }
+}
+
+function shoot() {
+  const tx = gun.x + Math.cos(gun.angle) * (gun.size + 4);
+  const ty = gun.y + Math.sin(gun.angle) * (gun.size + 4);
+  projectiles.push({
+    x: tx, y: ty,
+    vx: Math.cos(gun.angle) * shotSpeed,
+    vy: Math.sin(gun.angle) * shotSpeed,
+    trail: [], age: 0
+  });
+}
+
+function applyGravity(x, y, vx, vy, dt) {
+  const dx = SUN.x - x, dy = SUN.y - y;
+  const dist2 = dx * dx + dy * dy;
+  const dist = Math.sqrt(dist2);
+  const f = G / dist2;
+  return { vx: vx + (dx / dist) * f * dt, vy: vy + (dy / dist) * f * dt, dist };
+}
+
+function spawnParticles(x, y, color, count) {
+  for (let i = 0; i < count; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const spd = 40 + Math.random() * 80;
+    particles.push({
+      x, y, vx: Math.cos(a) * spd, vy: Math.sin(a) * spd,
+      life: 1, decay: 0.03 + Math.random() * 0.04,
+      r: 2 + Math.random() * 3, color
+    });
+  }
+}
+
+let lastTime = null;
+
+function update(ts) {
+  if (!lastTime) lastTime = ts;
+  const dt = Math.min((ts - lastTime) / 1000, 0.05);
+  lastTime = ts;
+  time += dt;
+
+  // Sun travels in a slow circle
+  const sunAngle = time * (Math.PI * 2 / SUN_PERIOD);
+  SUN.x = SUN_BASE_X + Math.cos(sunAngle) * SUN_ORBIT_R;
+  SUN.y = SUN_BASE_Y + Math.sin(sunAngle) * SUN_ORBIT_R;
+
+  // Gun controls
+  if (keys['ArrowLeft'])  gun.x -= GUN_MOVE_SPEED * dt;
+  if (keys['ArrowRight']) gun.x += GUN_MOVE_SPEED * dt;
+  if (keys['ArrowUp'])    gun.angle -= GUN_ROTATE_SPEED * dt;
+  if (keys['ArrowDown'])  gun.angle += GUN_ROTATE_SPEED * dt;
+  gun.x = Math.max(20, Math.min(W - 20, gun.x));
+
+  // Rotate and bob targets
+  for (const t of targets) {
+    if (!t.hit) {
+      t.rotation += t.rotSpeed * dt;
+      t.y = t.baseY + Math.sin(time * t.bobSpeed + t.bobPhase) * 20;
+    }
+  }
+
+  // Update projectiles
+  for (let i = projectiles.length - 1; i >= 0; i--) {
+    const p = projectiles[i];
+    p.age += dt;
+    p.trail.push({ x: p.x, y: p.y });
+    if (p.trail.length > 55) p.trail.shift();
+
+    const { vx, vy, dist } = applyGravity(p.x, p.y, p.vx, p.vy, dt);
+    p.vx = vx; p.vy = vy;
+    p.x += p.vx * dt; p.y += p.vy * dt;
+
+    if (dist < SUN.r + 4) {
+      spawnParticles(p.x, p.y, '#FF8800', 8);
+      playHitSun();
+      projectiles.splice(i, 1); continue;
+    }
+    if (p.x < -100 || p.x > W + 100 || p.y < -100 || p.y > H + 100) {
+      projectiles.splice(i, 1); continue;
+    }
+
+    // Hit targets — transform into target's rotated local space
+    let hitTarget = false;
+    for (let j = targets.length - 1; j >= 0; j--) {
+      const t = targets[j];
+      if (t.hit) continue;
+      const hs = t.size / 2;
+      const cos = Math.cos(-t.rotation), sin = Math.sin(-t.rotation);
+      const rx = p.x - t.x, ry = p.y - t.y;
+      const lx = rx * cos - ry * sin;
+      const ly = rx * sin + ry * cos;
+      if (Math.abs(lx) < hs && Math.abs(ly) < hs) {
+        t.hit = true;
+        score++;
+        spawnParticles(t.x, t.y, '#00FF88', 12);
+        playHitTarget();
+        projectiles.splice(i, 1);
+        hitTarget = true;
+        break;
+      }
+    }
+    if (hitTarget) continue;
+  }
+
+  // Update particles
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx * dt; p.y += p.vy * dt;
+    p.vx *= 0.95; p.vy *= 0.95;
+    p.life -= p.decay;
+    if (p.life <= 0) particles.splice(i, 1);
+  }
+
+  if (targets.length > 0 && targets.every(t => t.hit)) { playClearAll(); initTargets(); }
+
+  draw();
+  requestAnimationFrame(update);
+}
+
+function draw() {
+  ctx.fillStyle = '#080818';
+  ctx.fillRect(0, 0, W, H);
+
+  // Animated star field
+  for (const s of STARS) {
+    const a = s.base + Math.sin(time * s.speed + s.phase) * s.amp;
+    ctx.globalAlpha = Math.max(0, a);
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  // Trajectory preview — straight line, dimmer farther from sun
+  const tx = gun.x + Math.cos(gun.angle) * (gun.size + 4);
+  const ty = gun.y + Math.sin(gun.angle) * (gun.size + 4);
+  const ddx = Math.cos(gun.angle), ddy = Math.sin(gun.angle);
+  const STEP = 5, STEPS = 160;
+  ctx.lineWidth = 1.5;
+  for (let i = 0; i < STEPS; i++) {
+    const x0 = tx + ddx * i * STEP,       y0 = ty + ddy * i * STEP;
+    const x1 = tx + ddx * (i + 1) * STEP, y1 = ty + ddy * (i + 1) * STEP;
+    if (x1 < -10 || x1 > W + 10 || y1 < -10 || y1 > H + 10) break;
+    const dist = Math.hypot((x0 + x1) / 2 - SUN.x, (y0 + y1) / 2 - SUN.y);
+    const alpha = Math.max(0, 0.8 * (1 - dist / 160));
+    if (alpha <= 0) continue;
+    ctx.strokeStyle = `rgba(80, 180, 255, ${alpha})`;
+    ctx.beginPath();
+    ctx.moveTo(x0, y0);
+    ctx.lineTo(x1, y1);
+    ctx.stroke();
+  }
+
+  // Sun outer glow
+  const g1 = ctx.createRadialGradient(SUN.x, SUN.y, SUN.r * 0.5, SUN.x, SUN.y, SUN.r * 3.2);
+  g1.addColorStop(0, 'rgba(255, 220, 60, 0.3)');
+  g1.addColorStop(0.4, 'rgba(255, 140, 0, 0.12)');
+  g1.addColorStop(1, 'rgba(255, 80, 0, 0)');
+  ctx.fillStyle = g1;
+  ctx.beginPath();
+  ctx.arc(SUN.x, SUN.y, SUN.r * 3.2, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Sun body
+  const g2 = ctx.createRadialGradient(SUN.x - SUN.r * 0.3, SUN.y - SUN.r * 0.3, SUN.r * 0.1, SUN.x, SUN.y, SUN.r);
+  g2.addColorStop(0, '#FFFAAA');
+  g2.addColorStop(0.4, '#FFD700');
+  g2.addColorStop(1, '#FF8800');
+  ctx.fillStyle = g2;
+  ctx.beginPath();
+  ctx.arc(SUN.x, SUN.y, SUN.r, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Targets (rotated squares)
+  for (const t of targets) {
+    if (t.hit) continue;
+    const hs = t.size / 2;
+    ctx.save();
+    ctx.translate(t.x, t.y);
+    ctx.rotate(t.rotation);
+    ctx.shadowColor = '#00FF88';
+    ctx.shadowBlur = 6;
+    ctx.fillStyle = 'rgba(0, 255, 136, 0.12)';
+    ctx.fillRect(-hs, -hs, t.size, t.size);
+    ctx.strokeStyle = '#00CC66';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(-hs, -hs, t.size, t.size);
+    ctx.shadowBlur = 0;
+    ctx.restore();
+  }
+
+  // Projectile trails
+  for (const p of projectiles) {
+    if (p.trail.length < 2) continue;
+    ctx.lineWidth = 1.5;
+    for (let i = 1; i < p.trail.length; i++) {
+      const alpha = (i / p.trail.length) * 0.6;
+      ctx.strokeStyle = `rgba(255, 220, 60, ${alpha})`;
+      ctx.beginPath();
+      ctx.moveTo(p.trail[i - 1].x, p.trail[i - 1].y);
+      ctx.lineTo(p.trail[i].x, p.trail[i].y);
+      ctx.stroke();
+    }
+    ctx.shadowColor = '#FFE050';
+    ctx.shadowBlur = 8;
+    ctx.fillStyle = '#FFE050';
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+  }
+
+  // Particles
+  for (const p of particles) {
+    ctx.globalAlpha = p.life;
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r * p.life, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  // Gun (triangle)
+  ctx.save();
+  ctx.translate(gun.x, gun.y);
+  ctx.rotate(gun.angle);
+  ctx.shadowColor = '#4488FF';
+  ctx.shadowBlur = 10;
+  ctx.fillStyle = '#3366CC';
+  ctx.strokeStyle = '#88AAFF';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(gun.size + 2, 0);
+  ctx.lineTo(-gun.size * 0.75, -gun.size * 0.62);
+  ctx.lineTo(-gun.size * 0.75,  gun.size * 0.62);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+  ctx.restore();
+
+  // HUD — score
+  ctx.fillStyle = '#FFFFFF';
+  ctx.font = 'bold 16px monospace';
+  ctx.textAlign = 'left';
+  ctx.fillText('SCORE', 12, 22);
+  ctx.fillStyle = '#FFD700';
+  ctx.font = 'bold 20px monospace';
+  ctx.fillText(score, 12, 44);
+
+  // HUD — power level (bottom)
+  ctx.fillStyle = '#556';
+  ctx.font = '11px monospace';
+  ctx.textAlign = 'left';
+  ctx.fillText('PWR', 12, H - 22);
+  for (let i = 0; i < 9; i++) {
+    ctx.fillStyle = i < shotLevel ? '#4488FF' : '#1a1a2e';
+    ctx.fillRect(12 + i * 12, H - 16, 9, 7);
+    ctx.strokeStyle = '#334';
+    ctx.lineWidth = 0.5;
+    ctx.strokeRect(12 + i * 12, H - 16, 9, 7);
+  }
+
+  // Version
+  ctx.fillStyle = '#444';
+  ctx.font = '11px monospace';
+  ctx.textAlign = 'right';
+  ctx.fillText('v' + VERSION, W - 8, H - 8);
+}
+
+initTargets();
+requestAnimationFrame(update);
+</script>
+</body>
+</html>
