@@ -16,7 +16,7 @@ Initial sketch as input to Claude (click to enlarge).
 [![Initial rough sketch](sketch-small.jpeg)](https://rozim.github.io/ClaudeSunGravityGame/sketch.jpeg)
 
 After 10 minutes it had a very v1 that really just had the orientation wrong visually, and needed gravity to be tuned.
-[![Version 1, 10 minutes elapsed](v1-10minutes.png)](https://rozim.github.io/ClaudeSunGravityGame/v1-10minutes-small.png)
+[![Version 1, 10 minutes elapsed](v1-10minutes-small.png)](https://rozim.github.io/ClaudeSunGravityGame/v1-10minutes.png)
 
 After a total of 45 minutes, gravity was tuned, more controls were added, and it intelligently added multiple sounds given just a terse instruction of "add sound".
 
