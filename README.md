@@ -22,4 +22,6 @@ After a total of 45 minutes, gravity was tuned, more controls were added, and it
 
 [![Version 13, after 45 minutes total](v13-45minutes-small.png)](https://rozim.github.io/ClaudeSunGravityGame/v13-45minutes.png)
 
+It never asked me questions, maybe the concept was simple enough.
+
 Go ahead, it's safe, [Play Claude Sun Gravity Game now](https://rozim.github.io/ClaudeSunGravityGame/).
